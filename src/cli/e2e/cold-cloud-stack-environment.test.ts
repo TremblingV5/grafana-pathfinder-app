@@ -4,8 +4,8 @@ import {
   ColdCloudStackEnvironment,
   createColdCloudStackProvisioningConfig,
   type ColdCloudStackProvisioningConfig,
-  type CommandRunner,
 } from './cold-cloud-stack-environment';
+import type { CommandRunner } from './cloud-stack-terraform';
 
 const CONFIG: ColdCloudStackProvisioningConfig = {
   accessPolicyTokenEnvVar: 'GRAFANA_CLOUD_ACCESS_POLICY_TOKEN',

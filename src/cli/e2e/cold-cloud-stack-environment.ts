@@ -1,15 +1,32 @@
-import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { CloudChainEnvironment, ProvisionedCloudStack } from './cloud-chain-environment';
+import {
+  CLOUD_STACK_TOKEN_TTL_SECONDS,
+  DEFAULT_CLOUD_STACK_SLUG_PREFIX,
+  PATHFINDER_E2E_LABELS,
+  PATHFINDER_E2E_LABEL_VALUES,
+  PLUGIN_ID,
+  TERRAFORM_PROVIDER_VERSION,
+  generatedCloudStackSlug,
+  normalizeCloudStackSlugPrefix,
+  requireNonEmptyOption,
+  type CloudStackProvisioningConfig,
+} from './cloud-stack-common';
+import {
+  assertCommandSuccess,
+  defaultCommandRunner,
+  errorMessage,
+  hclString,
+  hclStringMap,
+  redact,
+  terraformEnv,
+  type CommandResult,
+  type CommandRunner,
+} from './cloud-stack-terraform';
 import { CLOUD_STACK_FETCH_TIMEOUT_MS } from './shared-cloud-stack-environment';
-
-const TERRAFORM_PROVIDER_VERSION = '~> 4.5';
-const PLUGIN_ID = 'grafana-pathfinder-app';
-const TOKEN_TTL_SECONDS = 3600;
-export const DEFAULT_CLOUD_STACK_SLUG_PREFIX = 'pfe2e';
 
 export interface ColdCloudStackConfigInput {
   accessPolicyTokenEnvVar?: string;
@@ -19,27 +36,10 @@ export interface ColdCloudStackConfigInput {
   env?: NodeJS.ProcessEnv;
 }
 
-export interface ColdCloudStackProvisioningConfig {
-  accessPolicyTokenEnvVar: string;
-  accessPolicyToken: string;
-  region: string;
-  slugPrefix: string;
-  pluginVersion?: string;
-}
+export type ColdCloudStackProvisioningConfig = CloudStackProvisioningConfig;
 
 export type { ProvisionedCloudStack } from './cloud-chain-environment';
-
-export interface CommandResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-export type CommandRunner = (
-  command: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv }
-) => Promise<CommandResult>;
+export type { CommandResult, CommandRunner } from './cloud-stack-terraform';
 
 interface TerraformOutput {
   stack_url?: { value?: unknown };
@@ -49,27 +49,6 @@ interface TerraformOutput {
 
 function hasAnyStackConfig(input: ColdCloudStackConfigInput): boolean {
   return Boolean(input.accessPolicyTokenEnvVar || input.region || input.slugPrefix || input.pluginVersion);
-}
-
-function normalizeSlugPrefix(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!/^[a-z][a-z0-9]*$/.test(normalized)) {
-    throw new Error(
-      '--cloud-stack-slug-prefix must contain at least one letter and only alphanumeric characters after normalization.'
-    );
-  }
-  return normalized.slice(0, 12);
-}
-
-function requireNonEmptyOption(value: string | undefined, missingMessage: string): string {
-  if (value === undefined) {
-    throw new Error(missingMessage);
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${missingMessage} The provided value must not be empty.`);
-  }
-  return trimmed;
 }
 
 export function createColdCloudStackProvisioningConfig(
@@ -99,24 +78,9 @@ export function createColdCloudStackProvisioningConfig(
       input.region,
       '--cloud-stack-region is required when Cloud stack provisioning is enabled'
     ),
-    slugPrefix: normalizeSlugPrefix(input.slugPrefix ?? DEFAULT_CLOUD_STACK_SLUG_PREFIX),
+    slugPrefix: normalizeCloudStackSlugPrefix(input.slugPrefix ?? DEFAULT_CLOUD_STACK_SLUG_PREFIX),
     pluginVersion: input.pluginVersion?.trim() || undefined,
   };
-}
-
-function generatedStackSlug(prefix: string): string {
-  const suffix = `${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 6)}`;
-  return `${prefix}${suffix}`.slice(0, 29);
-}
-
-function hclString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function hclStringMap(value: Record<string, string>): string {
-  return Object.entries(value)
-    .map(([key, mapValue]) => `    ${hclString(key)} = ${hclString(mapValue)}`)
-    .join('\n');
 }
 
 function pathfinderPluginResource(): string {
@@ -137,10 +101,10 @@ function terraformModule(options: {
   installPathfinderPlugin: boolean;
 }): string {
   const labels = {
-    'pathfinder-e2e': 'true',
-    'pathfinder-e2e-kind': 'cold-run',
-    'pathfinder-e2e-created-at': String(options.createdAtSeconds),
-    'pathfinder-e2e-run-id': options.runId,
+    [PATHFINDER_E2E_LABELS.base]: PATHFINDER_E2E_LABEL_VALUES.true,
+    [PATHFINDER_E2E_LABELS.kind]: PATHFINDER_E2E_LABEL_VALUES.coldRun,
+    [PATHFINDER_E2E_LABELS.createdAt]: String(options.createdAtSeconds),
+    [PATHFINDER_E2E_LABELS.runId]: options.runId,
   };
 
   return `terraform {
@@ -194,7 +158,7 @@ resource "grafana_cloud_stack_service_account_token" "e2e" {
   stack_slug = grafana_cloud_stack.e2e.slug
   name = "pathfinder-e2e"
   service_account_id = grafana_cloud_stack_service_account.e2e.id
-  seconds_to_live = ${TOKEN_TTL_SECONDS}
+  seconds_to_live = ${CLOUD_STACK_TOKEN_TTL_SECONDS}
 }
 
 output "stack_url" {
@@ -212,42 +176,6 @@ output "service_account_token" {
 `;
 }
 
-async function defaultCommandRunner(
-  command: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv }
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      resolve({ exitCode: code ?? 1, stdout, stderr });
-    });
-  });
-}
-
-function redact(text: string, secrets: string[]): string {
-  return secrets.reduce((current, secret) => (secret ? current.split(secret).join('[redacted]') : current), text);
-}
-
-function terraformEnv(config: ColdCloudStackProvisioningConfig): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    TF_IN_AUTOMATION: '1',
-    TF_VAR_cloud_access_policy_token: config.accessPolicyToken,
-    TF_VAR_cloud_stack_region: config.region,
-    TF_VAR_pathfinder_plugin_version: config.pluginVersion ?? 'latest',
-  };
-}
-
 function parseTerraformOutput(text: string): ProvisionedCloudStack {
   const parsed = JSON.parse(text) as TerraformOutput;
   const targetUrl = parsed.stack_url?.value;
@@ -257,10 +185,6 @@ function parseTerraformOutput(text: string): ProvisionedCloudStack {
     throw new Error('terraform output did not include stack_url, stack_slug, and service_account_token string values.');
   }
   return { kind: 'cold', targetUrl, token, stackSlug };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : 'Unknown error';
 }
 
 export class ColdCloudStackEnvironment implements CloudChainEnvironment {
@@ -279,7 +203,7 @@ export class ColdCloudStackEnvironment implements CloudChainEnvironment {
   }
 
   async provisionChain(): Promise<ProvisionedCloudStack> {
-    const slug = generatedStackSlug(this.config.slugPrefix);
+    const slug = generatedCloudStackSlug(this.config.slugPrefix);
     const moduleDir = mkdtempSync(join(tmpdir(), 'pathfinder-e2e-stack-'));
     chmodSync(moduleDir, 0o700);
     const createdAtSeconds = Math.floor(Date.now() / 1000);
@@ -357,11 +281,15 @@ export class ColdCloudStackEnvironment implements CloudChainEnvironment {
     if (!this.moduleDir) {
       throw new Error('Terraform module directory has not been initialized.');
     }
-    const result = await this.runner('terraform', args, { cwd: this.moduleDir, env: terraformEnv(this.config) });
-    if (result.exitCode !== 0) {
-      const detail = redact(result.stderr || result.stdout || `exit ${result.exitCode}`, this.secrets);
-      throw new Error(`terraform ${action} failed: ${detail}`);
-    }
+    const result = await this.runner('terraform', args, {
+      cwd: this.moduleDir,
+      env: terraformEnv({
+        accessPolicyToken: this.config.accessPolicyToken,
+        region: this.config.region,
+        pluginVersion: this.config.pluginVersion ?? 'latest',
+      }),
+    });
+    assertCommandSuccess(result, action, this.secrets);
     return result;
   }
 

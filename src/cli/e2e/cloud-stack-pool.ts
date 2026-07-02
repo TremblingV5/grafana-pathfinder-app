@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -6,19 +5,34 @@ import { join } from 'path';
 import type { CloudChainEnvironment, ProvisionedCloudStack } from './cloud-chain-environment';
 
 import {
+  CLOUD_STACK_SLUG_PATTERN,
+  CLOUD_STACK_TOKEN_TTL_SECONDS,
   DEFAULT_CLOUD_STACK_SLUG_PREFIX,
-  type ColdCloudStackProvisioningConfig,
+  PATHFINDER_E2E_LABELS,
+  PATHFINDER_E2E_LABEL_VALUES,
+  PLUGIN_ID,
+  TERRAFORM_PROVIDER_VERSION,
+  generatedCloudStackSlug,
+  normalizeCloudStackSlugPrefix,
+  optionalNonEmptyOption,
+  requireNonEmptyOption,
+  validateCloudStackLabelValue,
+  type CloudStackProvisioningConfig,
+} from './cloud-stack-common';
+import {
+  assertCommandSuccess,
+  defaultCommandRunner,
+  errorMessage,
+  hclString,
+  hclStringMap,
+  redact,
+  terraformEnv,
   type CommandResult,
   type CommandRunner,
-} from './cold-cloud-stack-environment';
+} from './cloud-stack-terraform';
 import { CLOUD_STACK_FETCH_TIMEOUT_MS } from './shared-cloud-stack-environment';
 
 const CLOUD_INSTANCES_API_URL = 'https://grafana.com/api/instances';
-const TERRAFORM_PROVIDER_VERSION = '~> 4.5';
-const PLUGIN_ID = 'grafana-pathfinder-app';
-const TOKEN_TTL_SECONDS = 3600;
-const LABEL_VALUE_PATTERN = /^[a-zA-Z0-9/\-._]+$/;
-const STACK_SLUG_PATTERN = /^[a-z][a-z0-9]{0,28}$/;
 
 export interface CloudStackPoolConfigInput {
   accessPolicyTokenEnvVar?: string;
@@ -74,75 +88,10 @@ export interface CreateCloudStackPoolStackOptions {
   runner?: CommandRunner;
 }
 
-async function defaultCommandRunner(
-  command: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv }
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env, shell: false });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      resolve({ exitCode: code ?? 1, stdout, stderr });
-    });
-  });
-}
-
 function hasAnyPoolConfig(input: CloudStackPoolConfigInput): boolean {
   return Boolean(
     input.accessPolicyTokenEnvVar || input.region || input.slugPrefix || input.pluginVersion || input.poolId
   );
-}
-
-function requireNonEmptyOption(value: string | undefined, missingMessage: string): string {
-  if (value === undefined) {
-    throw new Error(missingMessage);
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${missingMessage} The provided value must not be empty.`);
-  }
-  return trimmed;
-}
-
-function optionalNonEmptyOption(value: string | undefined, optionName: string): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${optionName} must not be empty.`);
-  }
-  return trimmed;
-}
-
-function normalizeSlugPrefix(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (!/^[a-z][a-z0-9]*$/.test(normalized)) {
-    throw new Error(
-      '--cloud-stack-slug-prefix must contain at least one letter and only alphanumeric characters after normalization.'
-    );
-  }
-  return normalized.slice(0, 12);
-}
-
-function validateLabelValue(value: string | undefined, optionName: string): string | undefined {
-  const trimmed = optionalNonEmptyOption(value, optionName);
-  if (trimmed === undefined) {
-    return undefined;
-  }
-  if (!LABEL_VALUE_PATTERN.test(trimmed)) {
-    throw new Error(`${optionName} must match ${LABEL_VALUE_PATTERN.source}.`);
-  }
-  return trimmed;
 }
 
 export function createCloudStackPoolConfig(input: CloudStackPoolConfigInput): CloudStackPoolConfig | undefined {
@@ -166,11 +115,11 @@ export function createCloudStackPoolConfig(input: CloudStackPoolConfigInput): Cl
   const config: CloudStackPoolConfig = {
     accessPolicyTokenEnvVar: envVar,
     accessPolicyToken,
-    slugPrefix: normalizeSlugPrefix(input.slugPrefix ?? DEFAULT_CLOUD_STACK_SLUG_PREFIX),
+    slugPrefix: normalizeCloudStackSlugPrefix(input.slugPrefix ?? DEFAULT_CLOUD_STACK_SLUG_PREFIX),
   };
   const region = optionalNonEmptyOption(input.region, '--cloud-stack-region');
   const pluginVersion = optionalNonEmptyOption(input.pluginVersion, '--cloud-stack-plugin-version');
-  const poolId = validateLabelValue(input.poolId, '--cloud-stack-pool-id');
+  const poolId = validateCloudStackLabelValue(input.poolId, '--cloud-stack-pool-id');
   if (region) {
     config.region = region;
   }
@@ -183,11 +132,11 @@ export function createCloudStackPoolConfig(input: CloudStackPoolConfigInput): Cl
   return config;
 }
 
-export function coldConfigFromPoolConfig(config: CloudStackPoolConfig): ColdCloudStackProvisioningConfig | undefined {
+export function coldConfigFromPoolConfig(config: CloudStackPoolConfig): CloudStackProvisioningConfig | undefined {
   if (!config.region) {
     return undefined;
   }
-  const coldConfig: ColdCloudStackProvisioningConfig = {
+  const coldConfig: CloudStackProvisioningConfig = {
     accessPolicyTokenEnvVar: config.accessPolicyTokenEnvVar,
     accessPolicyToken: config.accessPolicyToken,
     region: config.region,
@@ -197,51 +146,6 @@ export function coldConfigFromPoolConfig(config: CloudStackPoolConfig): ColdClou
     coldConfig.pluginVersion = config.pluginVersion;
   }
   return coldConfig;
-}
-
-function generatedStackSlug(prefix: string): string {
-  const suffix = `${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 6)}`;
-  return `${prefix}${suffix}`.slice(0, 29);
-}
-
-function hclString(value: string): string {
-  return JSON.stringify(value);
-}
-
-function hclStringMap(value: Record<string, string>): string {
-  return Object.entries(value)
-    .map(([key, mapValue]) => `    ${hclString(key)} = ${hclString(mapValue)}`)
-    .join('\n');
-}
-
-function redact(text: string, secrets: string[]): string {
-  return secrets.reduce((current, secret) => (secret ? current.split(secret).join('[redacted]') : current), text);
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : 'Unknown error';
-}
-
-function assertCommandSuccess(result: CommandResult, action: string, secrets: string[]): void {
-  if (result.exitCode === 0) {
-    return;
-  }
-  const detail = redact(result.stderr || result.stdout || `exit ${result.exitCode}`, secrets);
-  throw new Error(`terraform ${action} failed: ${detail}`);
-}
-
-function terraformEnv(options: {
-  accessPolicyToken: string;
-  region?: string;
-  pluginVersion?: string;
-}): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    TF_IN_AUTOMATION: '1',
-    TF_VAR_cloud_access_policy_token: options.accessPolicyToken,
-    ...(options.region ? { TF_VAR_cloud_stack_region: options.region } : {}),
-    ...(options.pluginVersion ? { TF_VAR_pathfinder_plugin_version: options.pluginVersion } : {}),
-  };
 }
 
 function tokenModule(stackSlug: string): string {
@@ -277,7 +181,7 @@ resource "grafana_cloud_stack_service_account_token" "runner" {
   stack_slug = ${hclString(stackSlug)}
   name = ${hclString(name)}
   service_account_id = grafana_cloud_stack_service_account.runner.id
-  seconds_to_live = ${TOKEN_TTL_SECONDS}
+  seconds_to_live = ${CLOUD_STACK_TOKEN_TTL_SECONDS}
 }
 
 output "service_account_token" {
@@ -289,11 +193,11 @@ output "service_account_token" {
 
 function replacementStackLabels(poolId: string | undefined, createdAtSeconds: number): Record<string, string> {
   return {
-    'pathfinder-e2e-pool': 'true',
-    ...(poolId ? { 'pathfinder-e2e-pool-id': poolId } : {}),
-    'pathfinder-e2e-state': 'available',
-    'pathfinder-e2e-kind': 'pool',
-    'pathfinder-e2e-created-at': String(createdAtSeconds),
+    [PATHFINDER_E2E_LABELS.pool]: PATHFINDER_E2E_LABEL_VALUES.true,
+    ...(poolId ? { [PATHFINDER_E2E_LABELS.poolId]: poolId } : {}),
+    [PATHFINDER_E2E_LABELS.state]: PATHFINDER_E2E_LABEL_VALUES.available,
+    [PATHFINDER_E2E_LABELS.kind]: PATHFINDER_E2E_LABEL_VALUES.pool,
+    [PATHFINDER_E2E_LABELS.createdAt]: String(createdAtSeconds),
   };
 }
 
@@ -363,7 +267,7 @@ function stackUrl(stack: CloudStackListItem): string | undefined {
       return undefined;
     }
   }
-  if (stack.slug && STACK_SLUG_PATTERN.test(stack.slug)) {
+  if (stack.slug && CLOUD_STACK_SLUG_PATTERN.test(stack.slug)) {
     return new URL(`https://${stack.slug}.grafana.net/`).toString();
   }
   return undefined;
@@ -378,16 +282,16 @@ function deleteProtectionEnabled(stack: CloudStackListItem): boolean {
 }
 
 function isAvailableState(stack: CloudStackListItem): boolean {
-  const state = stack.labels?.['pathfinder-e2e-state'];
-  return state === undefined || state === 'available';
+  const state = stack.labels?.[PATHFINDER_E2E_LABELS.state];
+  return state === undefined || state === PATHFINDER_E2E_LABEL_VALUES.available;
 }
 
 function poolLabelMatches(stack: CloudStackListItem): boolean {
-  return stack.labels?.['pathfinder-e2e-pool'] === 'true';
+  return stack.labels?.[PATHFINDER_E2E_LABELS.pool] === PATHFINDER_E2E_LABEL_VALUES.true;
 }
 
 function poolIdMatches(stack: CloudStackListItem, poolId: string | undefined): boolean {
-  return poolId === undefined || stack.labels?.['pathfinder-e2e-pool-id'] === poolId;
+  return poolId === undefined || stack.labels?.[PATHFINDER_E2E_LABELS.poolId] === poolId;
 }
 
 function stackDetailUrl(slug: string): string {
@@ -424,7 +328,7 @@ async function hydrateStackDetails(
 
 export async function createCloudStackPoolStack(options: CreateCloudStackPoolStackOptions): Promise<string> {
   const runner = options.runner ?? defaultCommandRunner;
-  const slug = generatedStackSlug(options.slugPrefix);
+  const slug = generatedCloudStackSlug(options.slugPrefix);
   const moduleDir = mkdtempSync(join(tmpdir(), 'pathfinder-e2e-pool-replace-'));
   chmodSync(moduleDir, 0o700);
   const modulePath = join(moduleDir, 'main.tf');
@@ -567,7 +471,7 @@ export class CloudStackPool {
         targetUrl &&
         !deleteProtectionEnabled(stack) &&
         !this.leasedSlugs.has(stack.slug) &&
-        STACK_SLUG_PATTERN.test(stack.slug)
+        CLOUD_STACK_SLUG_PATTERN.test(stack.slug)
       );
     });
     const poolLabel = this.config.poolId ?? 'any';

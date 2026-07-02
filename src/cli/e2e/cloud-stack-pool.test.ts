@@ -7,7 +7,7 @@ import {
   createCloudStackPoolStack,
   type CloudStackPoolConfig,
 } from './cloud-stack-pool';
-import type { CommandRunner } from './cold-cloud-stack-environment';
+import type { CommandRunner } from './cloud-stack-terraform';
 
 const CONFIG: CloudStackPoolConfig = {
   accessPolicyTokenEnvVar: 'GRAFANA_CLOUD_ACCESS_POLICY_TOKEN',
