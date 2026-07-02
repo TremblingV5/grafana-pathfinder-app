@@ -54,13 +54,16 @@ import type { ManifestJson, RepositoryEntry, RepositoryJson } from '../../types/
 
 import { randomUUID } from 'crypto';
 import { createCloudAuthPolicy, type CloudAuthPolicy } from '../e2e/cloud-auth';
+import { CloudChainCleanupRegistry } from '../e2e/cloud-chain-cleanup-registry';
 import { cloudTargetsInChain, provisionCloudTargetsForChain, sweepCloudTargets } from '../e2e/cloud-provisioning';
 import { unsafeCloudGuidesInChain, unsafeSharedStackMessage, unsafeSharedStackSkipResults } from '../e2e/cloud-routing';
+import type { ColdCloudStackProvisioningConfig } from '../e2e/cold-cloud-stack-environment';
 import {
-  ColdCloudStackCleanupRegistry,
-  createColdCloudStackProvisioningConfig,
-  type ColdCloudStackProvisioningConfig,
-} from '../e2e/cold-cloud-stack-environment';
+  CloudStackPool,
+  coldConfigFromPoolConfig,
+  createCloudStackPoolConfig,
+  type CloudStackPoolConfig,
+} from '../e2e/cloud-stack-pool';
 import { preflightTargetUrlsForPlan } from '../e2e/preflight-targets';
 
 /**
@@ -90,14 +93,16 @@ interface E2ECommandOptions {
   cloudInstanceAdminToken: string[];
   /** Default cloud instance URL for cloud-tier guides without an `instance`. */
   cloudUrl: string;
-  /** Env var containing a Grafana Cloud Access Policy token for cold stack provisioning. */
+  /** Env var containing a Grafana Cloud Access Policy token for isolated stack provisioning. */
   cloudStackAccessPolicyToken?: string;
-  /** Grafana Cloud region slug for cold stack provisioning. */
+  /** Grafana Cloud region slug for cold fallback and pool replacement. */
   cloudStackRegion?: string;
-  /** Slug prefix for cold-provisioned Grafana Cloud stacks. */
+  /** Slug prefix for cold-provisioned and replacement Grafana Cloud stacks. */
   cloudStackSlugPrefix?: string;
-  /** Pathfinder plugin version to install on cold-provisioned stacks. */
+  /** Pathfinder plugin version to install on cold-provisioned and replacement stacks. */
   cloudStackPluginVersion?: string;
+  /** Optional label value used to narrow Grafana Cloud E2E pool stack discovery. */
+  cloudStackPoolId?: string;
 }
 
 function collectOption(value: string, previous: string[]): string[] {
@@ -134,6 +139,8 @@ interface RunInputs {
   cloudAuth?: CloudAuthPolicy;
   /** Cold isolated-stack provisioning config for unsafe cloud chains. */
   cloudStack?: ColdCloudStackProvisioningConfig;
+  /** Pool-backed isolated-stack provisioning config for unsafe cloud chains. */
+  cloudStackPoolConfig?: CloudStackPoolConfig;
   /** Local package directory for manifest pre-flight, when applicable. */
   localPackageDir?: string;
 }
@@ -256,7 +263,7 @@ const REPEATED_SIGNAL_FORCE_EXIT_GRACE_MS = 30_000;
  * Install exit/signal handlers that tear down owned isolated environments.
  * On SIGINT/SIGTERM, re-raise with the conventional 128+signal code.
  */
-function installTeardownHandlers(cleanEnv: CleanEnvironment, cloudStackCleanup: ColdCloudStackCleanupRegistry): void {
+function installTeardownHandlers(cleanEnv: CleanEnvironment, cloudChainCleanup: CloudChainCleanupRegistry): void {
   let cleanupStartedAtMs: number | undefined;
   const exitHandler = () => cleanEnv.teardownIfOwned();
   const exitCodeForSignal = (signal: NodeJS.Signals) => (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1);
@@ -277,7 +284,7 @@ function installTeardownHandlers(cleanEnv: CleanEnvironment, cloudStackCleanup: 
     }
     cleanupStartedAtMs = Date.now();
     try {
-      const warnings = await cloudStackCleanup.teardownAll();
+      const warnings = await cloudChainCleanup.teardownAll();
       for (const warning of warnings) {
         console.warn(`   ⚠ ${warning}`);
       }
@@ -564,7 +571,8 @@ async function runChains(
   packageMetaById: Map<string, PackageMeta> = new Map(),
   cloudAuth?: CloudAuthPolicy,
   cloudStack?: ColdCloudStackProvisioningConfig,
-  cloudStackCleanup?: ColdCloudStackCleanupRegistry
+  cloudStackPoolConfig?: CloudStackPoolConfig,
+  cloudChainCleanup?: CloudChainCleanupRegistry
 ): Promise<ChainRunOutcome> {
   console.log('\n🎭 Running Playwright tests...\n');
 
@@ -572,6 +580,7 @@ async function runChains(
   let hasAuthExpiry = false;
   const cleanupWarnings: string[] = [];
   const results: GuideRunResult[] = [];
+  const cloudStackPool = cloudStackPoolConfig ? new CloudStackPool(cloudStackPoolConfig, options.verbose) : undefined;
   for (const [chainIndex, chain] of plan.chains.entries()) {
     if (options.clean && chainIndex > 0) {
       console.log(`\n🧹 Resetting docker compose between chains...`);
@@ -587,7 +596,7 @@ async function runChains(
     }
 
     const unsafeCloudGuides = unsafeCloudGuidesInChain(chain, packageMetaById);
-    if (unsafeCloudGuides.length > 0 && !cloudStack) {
+    if (unsafeCloudGuides.length > 0 && !cloudStack && !cloudStackPool) {
       const message = unsafeSharedStackMessage(unsafeCloudGuides.map((planned) => planned.id));
       console.log(`\n⊘ Skipping cloud chain: ${message}`);
       results.push(...unsafeSharedStackSkipResults(chain, packageMetaById, message));
@@ -601,7 +610,8 @@ async function runChains(
         chain,
         packageMetaById,
         cloudStack,
-        cloudStackCleanup,
+        cloudStackPool,
+        cloudChainCleanup,
         verbose: options.verbose,
       });
     } catch (err) {
@@ -773,19 +783,21 @@ async function resolveRunInputs(files: string[], options: E2ECommandOptions): Pr
   const cloudAuth = createCloudAuthPolicy({
     cloudInstanceAdminTokenSpecs: options.cloudInstanceAdminToken,
   });
-  const cloudStack = createColdCloudStackProvisioningConfig({
+  const cloudStackPoolConfig = createCloudStackPoolConfig({
     accessPolicyTokenEnvVar: options.cloudStackAccessPolicyToken,
     region: options.cloudStackRegion,
     slugPrefix: options.cloudStackSlugPrefix,
     pluginVersion: options.cloudStackPluginVersion,
+    poolId: options.cloudStackPoolId,
   });
+  const cloudStack = cloudStackPoolConfig ? coldConfigFromPoolConfig(cloudStackPoolConfig) : undefined;
   const remoteOptions: RemoteResolveOptions = {
     grafanaUrl: options.grafanaUrl,
     currentTier: options.tier,
     resolverUrl: options.resolverUrl,
     repoUrl: options.repoUrl,
     cloudUrl: options.cloudUrl,
-    cloudTargetCapabilities: { ...cloudAuth.targets, isolatedStack: Boolean(cloudStack) },
+    cloudTargetCapabilities: { ...cloudAuth.targets, isolatedStack: Boolean(cloudStackPoolConfig) },
   };
   const resolution =
     mode === 'remote-package'
@@ -814,6 +826,7 @@ async function resolveRunInputs(files: string[], options: E2ECommandOptions): Pr
     packageMetaById: buildPackageMetaMap(loadable),
     cloudAuth,
     cloudStack,
+    cloudStackPoolConfig,
   };
 }
 
@@ -871,16 +884,23 @@ export const e2eCommand = new Command('e2e')
   )
   .option(
     '--cloud-stack-access-policy-token <envVar>',
-    'Cloud Access Policy token env var for cold isolated Grafana Cloud stack provisioning'
+    'Cloud Access Policy token env var for isolated Grafana Cloud stack provisioning'
   )
-  .option('--cloud-stack-region <region>', 'Grafana Cloud region slug for cold isolated stack provisioning')
-  .option('--cloud-stack-slug-prefix <prefix>', 'Slug prefix for cold-provisioned Grafana Cloud stacks')
-  .option('--cloud-stack-plugin-version <version>', 'Pathfinder plugin version to install on cold-provisioned stacks')
+  .option('--cloud-stack-region <region>', 'Grafana Cloud region slug for cold fallback and pool replacement')
+  .option('--cloud-stack-slug-prefix <prefix>', 'Slug prefix for cold-provisioned and replacement Grafana Cloud stacks')
+  .option(
+    '--cloud-stack-plugin-version <version>',
+    'Pathfinder plugin version to install on cold-provisioned and replacement stacks'
+  )
+  .option(
+    '--cloud-stack-pool-id <id>',
+    'Optional Grafana Cloud E2E pool id label used to narrow hot-pool stack discovery'
+  )
   .action(async (files: string[], options: E2ECommandOptions) => {
     const cleanEnv = new CleanEnvironment(options.verbose);
-    const cloudStackCleanup = new ColdCloudStackCleanupRegistry();
+    const cloudChainCleanup = new CloudChainCleanupRegistry();
 
-    installTeardownHandlers(cleanEnv, cloudStackCleanup);
+    installTeardownHandlers(cleanEnv, cloudChainCleanup);
     if (options.clean && options.grafanaUrl === DEFAULT_GRAFANA_URL) {
       options.grafanaUrl = CLEAN_GRAFANA_URL;
     }
@@ -913,6 +933,7 @@ export const e2eCommand = new Command('e2e')
           packageMetaById: inputs.packageMetaById,
           cloudAuth: inputs.cloudAuth,
           cloudStack: inputs.cloudStack,
+          cloudStackPoolConfig: inputs.cloudStackPoolConfig,
           globalUrl: options.grafanaUrl,
         }),
         inputs.localPackageDir
@@ -925,7 +946,8 @@ export const e2eCommand = new Command('e2e')
         inputs.packageMetaById,
         inputs.cloudAuth,
         inputs.cloudStack,
-        cloudStackCleanup
+        inputs.cloudStackPoolConfig,
+        cloudChainCleanup
       );
 
       reportResults([...inputs.preRunSkipped, ...outcome.results], options, outcome.cleanupWarnings);

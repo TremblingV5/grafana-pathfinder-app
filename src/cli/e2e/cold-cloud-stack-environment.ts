@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { CloudChainEnvironment, ProvisionedCloudStack } from './cloud-chain-environment';
 import { CLOUD_STACK_FETCH_TIMEOUT_MS } from './shared-cloud-stack-environment';
 
 const TERRAFORM_PROVIDER_VERSION = '~> 4.5';
@@ -26,11 +27,7 @@ export interface ColdCloudStackProvisioningConfig {
   pluginVersion?: string;
 }
 
-export interface ProvisionedCloudStack {
-  targetUrl: string;
-  token: string;
-  stackSlug: string;
-}
+export type { ProvisionedCloudStack } from './cloud-chain-environment';
 
 export interface CommandResult {
   exitCode: number;
@@ -48,37 +45,6 @@ interface TerraformOutput {
   stack_url?: { value?: unknown };
   stack_slug?: { value?: unknown };
   service_account_token?: { value?: unknown };
-}
-
-interface CloudStackTeardownTarget {
-  teardownChain(): Promise<string[]>;
-}
-
-export class ColdCloudStackCleanupRegistry {
-  private readonly targets = new Set<CloudStackTeardownTarget>();
-
-  track(target: CloudStackTeardownTarget): void {
-    this.targets.add(target);
-  }
-
-  untrack(target: CloudStackTeardownTarget): void {
-    this.targets.delete(target);
-  }
-
-  async teardownAll(): Promise<string[]> {
-    const warnings: string[] = [];
-    const targets = [...this.targets];
-    for (const target of targets) {
-      try {
-        warnings.push(...(await target.teardownChain()));
-      } catch (err) {
-        warnings.push(`Failed to tear down active Cloud stack: ${errorMessage(err)}`);
-      } finally {
-        this.untrack(target);
-      }
-    }
-    return warnings;
-  }
 }
 
 function hasAnyStackConfig(input: ColdCloudStackConfigInput): boolean {
@@ -290,14 +256,14 @@ function parseTerraformOutput(text: string): ProvisionedCloudStack {
   if (typeof targetUrl !== 'string' || typeof token !== 'string' || typeof stackSlug !== 'string') {
     throw new Error('terraform output did not include stack_url, stack_slug, and service_account_token string values.');
   }
-  return { targetUrl, token, stackSlug };
+  return { kind: 'cold', targetUrl, token, stackSlug };
 }
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Unknown error';
 }
 
-export class ColdCloudStackEnvironment {
+export class ColdCloudStackEnvironment implements CloudChainEnvironment {
   private moduleDir: string | null = null;
   private currentStackSlug: string | null = null;
   private teardownPromise: Promise<string[]> | null = null;

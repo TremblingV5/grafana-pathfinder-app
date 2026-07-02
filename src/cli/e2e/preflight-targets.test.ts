@@ -1,4 +1,5 @@
 import type { CloudAuthPolicy } from './cloud-auth';
+import type { CloudStackPoolConfig } from './cloud-stack-pool';
 import type { ColdCloudStackProvisioningConfig } from './cold-cloud-stack-environment';
 import type { PackageMeta } from './e2e-results';
 import type { ExecutionPlan, PlannedGuide } from './guide-chains';
@@ -27,6 +28,12 @@ const cloudStack: ColdCloudStackProvisioningConfig = {
   accessPolicyTokenEnvVar: 'GRAFANA_CLOUD_ACCESS_POLICY_TOKEN',
   accessPolicyToken: 'cloud-access-token',
   region: 'prod-us-east-0',
+  slugPrefix: 'pfe2e',
+};
+
+const cloudStackPoolConfig: CloudStackPoolConfig = {
+  accessPolicyTokenEnvVar: 'GRAFANA_CLOUD_ACCESS_POLICY_TOKEN',
+  accessPolicyToken: 'cloud-access-token',
   slugPrefix: 'pfe2e',
 };
 
@@ -94,6 +101,7 @@ describe('e2e preflight targets', () => {
       packageMetaById: packageMetaWithMutatingCloudChain(),
       cloudAuth,
       cloudStack,
+      cloudStackPoolConfig: undefined,
       globalUrl: GLOBAL_URL,
     });
 
@@ -106,6 +114,7 @@ describe('e2e preflight targets', () => {
       packageMetaById: packageMetaWithMutatingCloudChain(),
       cloudAuth,
       cloudStack: undefined,
+      cloudStackPoolConfig: undefined,
       globalUrl: GLOBAL_URL,
     });
 
@@ -136,9 +145,23 @@ describe('e2e preflight targets', () => {
       packageMetaById,
       cloudAuth,
       cloudStack,
+      cloudStackPoolConfig: undefined,
       globalUrl: GLOBAL_URL,
     });
 
     expect(targets).toEqual([GLOBAL_URL]);
+  });
+
+  it('excludes guides routed through pool-backed cloud stacks from original target preflight checks', () => {
+    const targets = preflightTargetUrlsForPlan({
+      plan: planWithMutatingCloudChain(),
+      packageMetaById: packageMetaWithMutatingCloudChain(),
+      cloudAuth,
+      cloudStack: undefined,
+      cloudStackPoolConfig,
+      globalUrl: GLOBAL_URL,
+    });
+
+    expect(targets).toEqual([GLOBAL_URL, READONLY_SHARED_URL]);
   });
 });

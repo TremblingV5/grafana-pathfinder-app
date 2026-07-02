@@ -1,6 +1,7 @@
 import { chainNeedsCloudStack } from './cloud-provisioning';
 import { unsafeCloudGuidesInChain } from './cloud-routing';
 import type { CloudAuthPolicy } from './cloud-auth';
+import type { CloudStackPoolConfig } from './cloud-stack-pool';
 import type { ColdCloudStackProvisioningConfig } from './cold-cloud-stack-environment';
 import type { PackageMeta } from './e2e-results';
 import type { ExecutionPlan } from './guide-chains';
@@ -9,6 +10,7 @@ interface PreflightTargetUrlsForPlanOptions {
   packageMetaById: Map<string, PackageMeta>;
   cloudAuth: CloudAuthPolicy | undefined;
   cloudStack: ColdCloudStackProvisioningConfig | undefined;
+  cloudStackPoolConfig: CloudStackPoolConfig | undefined;
   globalUrl: string;
 }
 
@@ -17,8 +19,19 @@ interface PreflightTargetUrlsForPlanOptions {
  */
 export function preflightTargetUrlsForPlan(options: PreflightTargetUrlsForPlanOptions): string[] {
   const idsToSkip = new Set([
-    ...idsSkippedForUnsafeSharedStack(options.plan, options.packageMetaById, options.cloudStack),
-    ...idsUsingColdCloudStack(options.plan, options.packageMetaById, options.cloudAuth, options.cloudStack),
+    ...idsSkippedForUnsafeSharedStack(
+      options.plan,
+      options.packageMetaById,
+      options.cloudStack,
+      options.cloudStackPoolConfig
+    ),
+    ...idsUsingCloudStack(
+      options.plan,
+      options.packageMetaById,
+      options.cloudAuth,
+      options.cloudStack,
+      options.cloudStackPoolConfig
+    ),
   ]);
 
   return targetUrlsToCheck(options.packageMetaById, options.globalUrl, idsToSkip);
@@ -27,10 +40,11 @@ export function preflightTargetUrlsForPlan(options: PreflightTargetUrlsForPlanOp
 function idsSkippedForUnsafeSharedStack(
   plan: ExecutionPlan,
   packageMetaById: Map<string, PackageMeta>,
-  cloudStack: ColdCloudStackProvisioningConfig | undefined
+  cloudStack: ColdCloudStackProvisioningConfig | undefined,
+  cloudStackPoolConfig: CloudStackPoolConfig | undefined
 ): Set<string> {
   const ids = new Set<string>();
-  if (cloudStack) {
+  if (cloudStack || cloudStackPoolConfig) {
     return ids;
   }
   for (const chain of plan.chains) {
@@ -43,15 +57,23 @@ function idsSkippedForUnsafeSharedStack(
   return ids;
 }
 
-function idsUsingColdCloudStack(
+function idsUsingCloudStack(
   plan: ExecutionPlan,
   packageMetaById: Map<string, PackageMeta>,
   cloudAuth: CloudAuthPolicy | undefined,
-  cloudStack: ColdCloudStackProvisioningConfig | undefined
+  cloudStack: ColdCloudStackProvisioningConfig | undefined,
+  cloudStackPoolConfig: CloudStackPoolConfig | undefined
 ): Set<string> {
   const ids = new Set<string>();
   for (const chain of plan.chains) {
-    if (chainNeedsCloudStack({ chain, packageMetaById, cloudAuth, cloudStack })) {
+    if (
+      chainNeedsCloudStack({
+        chain,
+        packageMetaById,
+        cloudAuth,
+        hasIsolatedCloudStack: Boolean(cloudStack || cloudStackPoolConfig),
+      })
+    ) {
       for (const planned of chain) {
         ids.add(planned.id);
       }

@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 
 import {
-  ColdCloudStackCleanupRegistry,
   ColdCloudStackEnvironment,
   createColdCloudStackProvisioningConfig,
   type ColdCloudStackProvisioningConfig,
@@ -83,36 +82,6 @@ describe('createColdCloudStackProvisioningConfig', () => {
   });
 });
 
-describe('ColdCloudStackCleanupRegistry', () => {
-  it('tears down tracked stacks once and untracks them', async () => {
-    const registry = new ColdCloudStackCleanupRegistry();
-    const first = { teardownChain: jest.fn(async () => ['first warning']) };
-    const second = { teardownChain: jest.fn(async () => []) };
-
-    registry.track(first);
-    registry.track(second);
-
-    await expect(registry.teardownAll()).resolves.toEqual(['first warning']);
-    await expect(registry.teardownAll()).resolves.toEqual([]);
-    expect(first.teardownChain).toHaveBeenCalledTimes(1);
-    expect(second.teardownChain).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns a warning when a tracked stack teardown throws', async () => {
-    const registry = new ColdCloudStackCleanupRegistry();
-    const target = {
-      teardownChain: jest.fn(async () => {
-        throw new Error('destroy failed');
-      }),
-    };
-
-    registry.track(target);
-
-    await expect(registry.teardownAll()).resolves.toEqual(['Failed to tear down active Cloud stack: destroy failed']);
-    await expect(registry.teardownAll()).resolves.toEqual([]);
-  });
-});
-
 describe('ColdCloudStackEnvironment', () => {
   let warnSpy: jest.SpyInstance;
 
@@ -144,6 +113,7 @@ describe('ColdCloudStackEnvironment', () => {
     const provisioned = await env.provisionChain();
 
     expect(provisioned).toEqual({
+      kind: 'cold',
       targetUrl: 'https://pfe2eabc.grafana.net/',
       stackSlug: 'pfe2eabc',
       token: 'glsa_stack',

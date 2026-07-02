@@ -2,14 +2,15 @@ jest.mock('./shared-cloud-stack-environment', () => ({
   SharedCloudStackEnvironment: jest.fn().mockImplementation((adminToken: string, cloudUrl: string) => ({
     adminToken,
     cloudUrl,
-    provisionChain: jest.fn(async () => `minted:${cloudUrl}`),
-    teardownChain: jest.fn(async () => undefined),
+    provisionChain: jest.fn(async () => ({ kind: 'shared', targetUrl: cloudUrl, token: `minted:${cloudUrl}` })),
+    teardownChain: jest.fn(async () => []),
     sweepOrphans: jest.fn(async () => undefined),
   })),
 }));
 jest.mock('./cold-cloud-stack-environment', () => ({
   ColdCloudStackEnvironment: jest.fn().mockImplementation(() => ({
     provisionChain: jest.fn(async () => ({
+      kind: 'cold',
       targetUrl: 'https://isolated.grafana.net/',
       token: 'isolated-token',
       stackSlug: 'isolated',
@@ -20,6 +21,7 @@ jest.mock('./cold-cloud-stack-environment', () => ({
 
 import { SharedCloudStackEnvironment } from './shared-cloud-stack-environment';
 import { ColdCloudStackEnvironment, type ColdCloudStackProvisioningConfig } from './cold-cloud-stack-environment';
+import type { CloudStackPool } from './cloud-stack-pool';
 import {
   chainNeedsCloudStack,
   cloudTargetsInChain,
@@ -53,6 +55,13 @@ const cloudStack: ColdCloudStackProvisioningConfig = {
   slugPrefix: 'pfe2e',
 };
 
+function poolWithLease(lease: unknown, diagnostics = 'pool exhausted'): CloudStackPool {
+  return {
+    lease: jest.fn(async () => lease),
+    diagnostics: jest.fn(() => diagnostics),
+  } as unknown as CloudStackPool;
+}
+
 describe('cloudTargetsInChain', () => {
   it('deduplicates shared-stack target URLs', () => {
     const packageMetaById = new Map<string, PackageMeta>([
@@ -70,16 +79,16 @@ describe('cloudTargetsInChain', () => {
 
 describe('ProvisionedCloudTargets', () => {
   it('looks up minted tokens by origin and tears down all targets', async () => {
-    const learnEnv = { teardownChain: jest.fn(async () => undefined) } as unknown as InstanceType<
+    const learnEnv = { teardownChain: jest.fn(async () => []) } as unknown as InstanceType<
       typeof SharedCloudStackEnvironment
     >;
-    const playEnv = { teardownChain: jest.fn(async () => undefined) } as unknown as InstanceType<
+    const playEnv = { teardownChain: jest.fn(async () => []) } as unknown as InstanceType<
       typeof SharedCloudStackEnvironment
     >;
     const provisioned = new ProvisionedCloudTargets();
 
-    provisioned.add('https://learn.grafana.net/', { env: learnEnv, token: 'learn-token' });
-    provisioned.add('https://play.grafana.org/', { env: playEnv, token: 'play-token' });
+    provisioned.add({ kind: 'shared', targetUrl: 'https://learn.grafana.net/', token: 'learn-token' }, learnEnv);
+    provisioned.add({ kind: 'shared', targetUrl: 'https://play.grafana.org/', token: 'play-token' }, playEnv);
 
     expect(provisioned.tokenFor('https://learn.grafana.net/dashboards')).toBe('learn-token');
     expect(provisioned.tokenFor('https://play.grafana.org/a')).toBe('play-token');
@@ -94,11 +103,11 @@ describe('ProvisionedCloudTargets', () => {
     const env = { teardownChain: jest.fn(async () => ['warning']) };
     const provisioned = new ProvisionedCloudTargets();
 
-    provisioned.addForGuides(['a', 'b'], {
-      env,
-      token: 'isolated-token',
-      targetUrl: 'https://isolated.grafana.net/',
-    });
+    provisioned.addForGuides(
+      ['a', 'b'],
+      { kind: 'cold', stackSlug: 'isolated', token: 'isolated-token', targetUrl: 'https://isolated.grafana.net/' },
+      env
+    );
 
     expect(provisioned.targetUrlForGuide('a', 'https://learn.grafana.net/')).toBe('https://isolated.grafana.net/');
     expect(provisioned.tokenForGuide('b', 'https://learn.grafana.net/')).toBe('isolated-token');
@@ -132,8 +141,12 @@ describe('chainNeedsCloudStack', () => {
       ],
     ]);
 
-    expect(chainNeedsCloudStack({ chain: [{ id: 'readonly' }], packageMetaById, cloudAuth, cloudStack })).toBe(false);
-    expect(chainNeedsCloudStack({ chain: [{ id: 'mutating' }], packageMetaById, cloudAuth, cloudStack })).toBe(true);
+    expect(
+      chainNeedsCloudStack({ chain: [{ id: 'readonly' }], packageMetaById, cloudAuth, hasIsolatedCloudStack: true })
+    ).toBe(false);
+    expect(
+      chainNeedsCloudStack({ chain: [{ id: 'mutating' }], packageMetaById, cloudAuth, hasIsolatedCloudStack: true })
+    ).toBe(true);
   });
 
   it('uses a cold stack for cloud guides that lack shared-stack auth', () => {
@@ -149,7 +162,9 @@ describe('chainNeedsCloudStack', () => {
       ],
     ]);
 
-    expect(chainNeedsCloudStack({ chain: [{ id: 'readonly' }], packageMetaById, cloudAuth, cloudStack })).toBe(true);
+    expect(
+      chainNeedsCloudStack({ chain: [{ id: 'readonly' }], packageMetaById, cloudAuth, hasIsolatedCloudStack: true })
+    ).toBe(true);
   });
 
   it('does not require a cold stack when no stack config exists', () => {
@@ -166,8 +181,31 @@ describe('chainNeedsCloudStack', () => {
     ]);
 
     expect(
-      chainNeedsCloudStack({ chain: [{ id: 'mutating' }], packageMetaById, cloudAuth, cloudStack: undefined })
+      chainNeedsCloudStack({ chain: [{ id: 'mutating' }], packageMetaById, cloudAuth, hasIsolatedCloudStack: false })
     ).toBe(false);
+  });
+
+  it('requires a stack when only pool-backed isolated stack support is available', () => {
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    expect(
+      chainNeedsCloudStack({
+        chain: [{ id: 'mutating' }],
+        packageMetaById,
+        cloudAuth,
+        hasIsolatedCloudStack: true,
+      })
+    ).toBe(true);
   });
 });
 
@@ -203,8 +241,8 @@ describe('provisionCloudTargetsForChain', () => {
       (adminToken: string, cloudUrl: string) => ({
         adminToken,
         cloudUrl,
-        provisionChain: jest.fn(async () => `minted:${cloudUrl}`),
-        teardownChain: jest.fn(async () => undefined),
+        provisionChain: jest.fn(async () => ({ kind: 'shared', targetUrl: cloudUrl, token: `minted:${cloudUrl}` })),
+        teardownChain: jest.fn(async () => []),
         sweepOrphans: jest.fn(async () => undefined),
       })
     );
@@ -215,7 +253,7 @@ describe('provisionCloudTargetsForChain', () => {
         provisionChain: jest.fn(async () => {
           throw new Error('boom');
         }),
-        teardownChain: jest.fn(async () => undefined),
+        teardownChain: jest.fn(async () => []),
         sweepOrphans: jest.fn(async () => undefined),
       })
     );
@@ -280,6 +318,104 @@ describe('provisionCloudTargetsForChain', () => {
     );
     expect(provisioned.tokenForGuide('mutating', 'https://learn.grafana.net/')).toBe('isolated-token');
     await expect(provisioned.teardownAll()).resolves.toEqual(['cleanup warning']);
+  });
+
+  it('prefers a hot-pool lease before cold provisioning', async () => {
+    const poolLease = {
+      provisionChain: jest.fn(() => ({
+        kind: 'pool',
+        targetUrl: 'https://pool.grafana.net/',
+        token: 'pool-token',
+        stackSlug: 'pool',
+      })),
+      teardownChain: jest.fn(async () => ['pool cleanup warning']),
+    };
+    const cloudStackPool = poolWithLease(poolLease);
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    const provisioned = await provisionCloudTargetsForChain({
+      targetUrls: ['https://learn.grafana.net/'],
+      cloudAuth,
+      chain: [{ id: 'mutating' }],
+      packageMetaById,
+      cloudStack,
+      cloudStackPool,
+      verbose: false,
+    });
+
+    expect(cloudStackPool.lease).toHaveBeenCalledTimes(1);
+    expect(ColdCloudStackEnvironment).not.toHaveBeenCalled();
+    expect(provisioned.targetUrlForGuide('mutating', 'https://learn.grafana.net/')).toBe('https://pool.grafana.net/');
+    expect(provisioned.tokenForGuide('mutating', 'https://learn.grafana.net/')).toBe('pool-token');
+    await expect(provisioned.teardownAll()).resolves.toEqual(['pool cleanup warning']);
+  });
+
+  it('falls back to cold provisioning when the pool is exhausted and region config exists', async () => {
+    const cloudStackPool = poolWithLease(undefined, 'listed 1 stack(s); 0 were leaseable.');
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    const provisioned = await provisionCloudTargetsForChain({
+      targetUrls: ['https://learn.grafana.net/'],
+      cloudAuth,
+      chain: [{ id: 'mutating' }],
+      packageMetaById,
+      cloudStack,
+      cloudStackPool,
+      verbose: false,
+    });
+
+    expect(cloudStackPool.lease).toHaveBeenCalledTimes(1);
+    expect(ColdCloudStackEnvironment).toHaveBeenCalledWith(cloudStack, false);
+    expect(provisioned.targetUrlForGuide('mutating', 'https://learn.grafana.net/')).toBe(
+      'https://isolated.grafana.net/'
+    );
+  });
+
+  it('reports pool diagnostics when no isolated stack is available', async () => {
+    const cloudStackPool = poolWithLease(undefined, 'listed 1 stack(s); 0 were leaseable.');
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    await expect(
+      provisionCloudTargetsForChain({
+        targetUrls: ['https://learn.grafana.net/'],
+        cloudAuth,
+        chain: [{ id: 'mutating' }],
+        packageMetaById,
+        cloudStackPool,
+        verbose: false,
+      })
+    ).rejects.toThrow('listed 1 stack(s); 0 were leaseable.');
+    expect(ColdCloudStackEnvironment).not.toHaveBeenCalled();
   });
 });
 
