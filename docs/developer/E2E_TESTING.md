@@ -37,29 +37,30 @@ npx pathfinder-cli e2e [options] [files...]
 
 ### Options
 
-| Option                                    | Description                                                                                                                                              | Default                           |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `--grafana-url <url>`                     | Grafana instance URL. Auto-switches to `http://localhost:3010` when `--clean` is set and this flag is not passed.                                        | `http://localhost:3000`           |
-| `--output <path>`                         | Path for JSON report output                                                                                                                              | None                              |
-| `--artifacts <dir>`                       | Directory for failure artifacts (screenshots, DOM snapshots)                                                                                             | `/tmp/pathfinder-e2e-{uuid}`      |
-| `--verbose`                               | Enable detailed logging                                                                                                                                  | `false`                           |
-| `--bundled`                               | Test all bundled guides                                                                                                                                  | `false`                           |
-| `--trace`                                 | Generate Playwright trace files for debugging                                                                                                            | `false`                           |
-| `--headed`                                | Run browser visibly (not headless)                                                                                                                       | `false`                           |
-| `--always-screenshot`                     | Capture screenshots on success and failure                                                                                                               | `false`                           |
-| `--clean`                                 | Run against an isolated docker-compose stack (project `pathfinder-e2e`, Grafana on `:3010`). Resets between dependency chains and tears down at the end. | `false`                           |
-| `--clean-ready-timeout-ms <ms>`           | How long to wait for the isolated Grafana to become healthy after a `--clean` reset                                                                      | `120000`                          |
-| `--package <dirOrId>`                     | Test a local package directory, or — when not an existing directory — a bare package ID resolved remotely via the recommender                            | None                              |
-| `--tier <tier>`                           | Current environment tier (`local` or `cloud`); `cloud` guides are skipped on a `local` environment                                                       | `local`                           |
-| `--remote`                                | Resolve and test every package from the CDN repository index                                                                                             | `false`                           |
-| `--repo-url <url>`                        | CDN base URL for `--remote`                                                                                                                              | Public package repository         |
-| `--resolver-url <url>`                    | Recommender base URL for `--package <id>` resolution                                                                                                     | `https://recommender.grafana.com` |
-| `--cloud-instance-admin-token <host=env>` | Admin service-account token env var for a cloud target. Repeat for multiple cloud instances.                                                             | None                              |
-| `--cloud-url <url>`                       | Default Grafana Cloud instance URL for cloud-tier guides without a manifest `instance`.                                                                  | `https://learn.grafana.net/`      |
-| `--cloud-stack-access-policy-token <env>` | Cloud Access Policy token env var for cold isolated Grafana Cloud stack provisioning.                                                                    | None                              |
-| `--cloud-stack-region <region>`           | Grafana Cloud region slug for cold isolated stack provisioning. Required with `--cloud-stack-access-policy-token`.                                       | None                              |
-| `--cloud-stack-slug-prefix <prefix>`      | Slug prefix for cold-provisioned Grafana Cloud stacks.                                                                                                   | `pfe2e`                           |
-| `--cloud-stack-plugin-version <version>`  | Pathfinder plugin version to install when the cold-provisioned stack does not already include the plugin.                                                | `latest`                          |
+| Option                                    | Description                                                                                                                                                | Default                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `--grafana-url <url>`                     | Grafana instance URL. Auto-switches to `http://localhost:3010` when `--clean` is set and this flag is not passed.                                          | `http://localhost:3000`           |
+| `--output <path>`                         | Path for JSON report output                                                                                                                                | None                              |
+| `--artifacts <dir>`                       | Directory for failure artifacts (screenshots, DOM snapshots)                                                                                               | `/tmp/pathfinder-e2e-{uuid}`      |
+| `--verbose`                               | Enable detailed logging                                                                                                                                    | `false`                           |
+| `--bundled`                               | Test all bundled guides                                                                                                                                    | `false`                           |
+| `--trace`                                 | Generate Playwright trace files for debugging                                                                                                              | `false`                           |
+| `--headed`                                | Run browser visibly (not headless)                                                                                                                         | `false`                           |
+| `--always-screenshot`                     | Capture screenshots on success and failure                                                                                                                 | `false`                           |
+| `--clean`                                 | Run against an isolated docker-compose stack (project `pathfinder-e2e`, Grafana on `:3010`). Resets between dependency chains and tears down at the end.   | `false`                           |
+| `--clean-ready-timeout-ms <ms>`           | How long to wait for the isolated Grafana to become healthy after a `--clean` reset                                                                        | `120000`                          |
+| `--package <dirOrId>`                     | Test a local package directory, or — when not an existing directory — a bare package ID resolved remotely via the recommender                              | None                              |
+| `--tier <tier>`                           | Current environment tier (`local` or `cloud`); `cloud` guides are skipped on a `local` environment                                                         | `local`                           |
+| `--remote`                                | Resolve and test every package from the CDN repository index                                                                                               | `false`                           |
+| `--repo-url <url>`                        | CDN base URL for `--remote`                                                                                                                                | Public package repository         |
+| `--resolver-url <url>`                    | Recommender base URL for `--package <id>` resolution                                                                                                       | `https://recommender.grafana.com` |
+| `--cloud-instance-admin-token <host=env>` | Admin service-account token env var for a cloud target. Repeat for multiple cloud instances.                                                               | None                              |
+| `--cloud-url <url>`                       | Default Grafana Cloud instance URL for cloud-tier guides without a manifest `instance`.                                                                    | `https://learn.grafana.net/`      |
+| `--cloud-stack-access-policy-token <env>` | Cloud Access Policy token env var for isolated Grafana Cloud stack provisioning, including hot-pool leasing and cold fallback.                             | None                              |
+| `--cloud-stack-region <region>`           | Grafana Cloud region slug for cold isolated stack provisioning, and fallback region for hot-pool replacement when leased stack details do not include one. | None                              |
+| `--cloud-stack-slug-prefix <prefix>`      | Slug prefix for cold-provisioned and replacement Grafana Cloud stacks.                                                                                     | `pfe2e`                           |
+| `--cloud-stack-plugin-version <version>`  | Pathfinder plugin version to install on cold-provisioned and replacement pool stacks.                                                                      | `latest`                          |
+| `--cloud-stack-pool-id <id>`              | Optional Grafana Cloud E2E pool id label used to narrow hot-pool stack discovery.                                                                          | None                              |
 
 ### Input formats
 
@@ -413,18 +414,28 @@ The CLI can resolve published guides instead of reading local files, then test t
 Guides are routed by their manifest's `testEnvironment.tier`:
 
 - `local` (or no tier) guides run against `--grafana-url`.
-- `cloud` guides run against `--cloud-url` (default `https://learn.grafana.net/`), or against `https://{instance}/` when the manifest declares a host-only `testEnvironment.instance`. Shared-stack runs require an admin token explicitly associated with that host via `--cloud-instance-admin-token host=ENV_VAR_NAME`; cold isolated-stack runs require Cloud stack provisioning config instead.
+- `cloud` guides run against `--cloud-url` (default `https://learn.grafana.net/`), or against `https://{instance}/` when the manifest declares a host-only `testEnvironment.instance`. Shared-stack runs require an admin token explicitly associated with that host via `--cloud-instance-admin-token host=ENV_VAR_NAME`; isolated-stack runs require Cloud stack provisioning config instead.
 
 Cloud auth:
 
 - **Admin token per cloud target.** Pass `--cloud-instance-admin-token learn.grafana.net=GRAFANA_LEARN_ADMIN_TOKEN` to associate an admin service-account token env var with a cloud target. The CLI uses that admin token only to mint a fresh service account and short-lived token for each dependency chain; the browser runner receives only the minted token. Repeat the flag for each supported instance.
-- **Cold isolated stack provisioning.** Pass `--cloud-stack-access-policy-token GRAFANA_CLOUD_ACCESS_POLICY_TOKEN --cloud-stack-region <region>` to let unsafe cloud dependency chains run against a fresh Grafana Cloud stack instead of the shared target. The token value must live in the named environment variable; the CLI passes it to Terraform as `TF_VAR_cloud_access_policy_token` and passes region/plugin version through Terraform variables rather than generated HCL. The local `terraform` CLI must be installed.
+- **Isolated stack provisioning.** Pass `--cloud-stack-access-policy-token GRAFANA_CLOUD_ACCESS_POLICY_TOKEN` to let unsafe cloud dependency chains use isolated Grafana Cloud stacks instead of the shared target. With pool labels present, the CLI tries to lease a hot-pool stack first; pass `--cloud-stack-pool-id <id>` to narrow pool discovery. With `--cloud-stack-region <region>`, it falls back to cold provisioning when no pool stack is leaseable and can use that region as a replacement fallback when leased stack details do not include one. Without a region from either the leased stack details or `--cloud-stack-region`, the runner can still use pool-only discovery but cannot cold-provision or immediately replace retired pool members. The token value must live in the named environment variable; the CLI passes it to Terraform as `TF_VAR_cloud_access_policy_token` and passes region/plugin version through Terraform variables rather than generated HCL. The Cloud Access Policy token must be able to list/read stacks, create/delete stacks (`stacks:read`, `stacks:write`, `stacks:delete`), create stack service accounts/tokens (`stack-service-accounts:write`), and install Pathfinder through the Grafana provider's plugin-installation resource. The local `terraform` CLI must be installed for runner-token minting, cold fallback, and replacement creation.
 
 Per-chain service-account isolation mirrors how `--clean` resets the local docker stack per chain. Minted tokens carry a TTL, and accounts orphaned by crashed runs are swept on the next run. This isolates per-identity state (preferences, stars, sessions) between chains; it does **not** reset org data such as dashboards or data sources created by guides.
 
-Cold isolated stack routing is used for cloud dependency chains classified as `possibly_mutating`, `mutating`, or `unknown` when cold-stack config is present. The CLI creates a Grafana Cloud stack with `delete_protection=false`, mints a short-lived Admin runner token, probes for `grafana-pathfinder-app`, installs the plugin only when missing, runs the chain against the fresh stack URL, and then attempts `terraform destroy`. Teardown is best-effort: cleanup failures are reported as warnings without replacing the primary guide result. Ctrl-C and SIGTERM also attempt to destroy any active cold-provisioned stack before exiting. If the process is killed before signal handling or Terraform teardown runs, a labeled cold stack may require manual cleanup; future hot-pool/reconciler work will add durable recovery. If cold-stack config is absent, unsafe cloud chains remain `skipped_unsafe_shared_stack`.
+Cold isolated stack routing is used for cloud dependency chains classified as `possibly_mutating`, `mutating`, or `unknown` when cold-stack config is present. The CLI creates a Grafana Cloud stack with `delete_protection=false`, mints a short-lived Admin runner token, probes for `grafana-pathfinder-app`, installs the plugin only when missing, runs the chain against the fresh stack URL, and then attempts `terraform destroy`. Teardown is best-effort: cleanup failures are reported as warnings without replacing the primary guide result. Ctrl-C and SIGTERM also attempt to destroy any active cold-provisioned stack before exiting. If the process is killed before signal handling or Terraform teardown runs, a labeled cold stack may require manual cleanup; future reconciler work will add durable recovery. If isolated stack config is absent, unsafe cloud chains remain `skipped_unsafe_shared_stack`.
 
-Read-only cloud chains with matching `--cloud-instance-admin-token` keep using the faster shared-stack service-account path. If a cloud chain lacks shared-stack auth but cold-stack config is present, the runner can use a cold isolated stack for that chain.
+Hot-pool stack routing is used before cold provisioning when `--cloud-stack-access-policy-token` is set. The CLI lists Grafana Cloud stacks from the Cloud API, hydrates stack details when list rows omit labels, and leases the first matching available pool member for a dependency chain. Pool members must be labeled:
+
+- `pathfinder-e2e-pool=true` — required.
+- `pathfinder-e2e-pool-id=<id>` — optional; pass `--cloud-stack-pool-id <id>` to narrow discovery.
+- `pathfinder-e2e-state=available` — optional; missing state is treated as available, and any other value is excluded.
+
+Pool members should have `delete_protection=false` and `grafana-pathfinder-app` installed before they are labeled available. After a stack is leased, the CLI mints a short-lived runner token, verifies the Pathfinder plugin is installed, runs the chain, destroys the runner-token Terraform module, deletes the used stack, and creates a replacement when a region is available. Auto-created replacements carry the same pool labels and install Pathfinder using `--cloud-stack-plugin-version` or `latest`.
+
+If no pool member is leaseable, the CLI prints pool diagnostics and falls back to cold provisioning when `--cloud-stack-region` is set. If no region is available, the affected chain fails with `provisioning_failed` instead of running against a shared stack. Pool leasing is process-local in this phase: one CLI invocation will not reuse the same pool stack, but concurrent CLI invocations still need external coordination until durable pool coordination is implemented.
+
+Read-only cloud chains with matching `--cloud-instance-admin-token` keep using the faster shared-stack service-account path. If a cloud chain lacks shared-stack auth but isolated stack config is present, the runner can use an isolated stack for that chain.
 
 Interactive SSO/Okta login (driving the identity provider's login UI) is not supported. Path/journey (`milestones`) expansion is also not yet implemented; `path` and `journey` packages are skipped as an unsupported type. See the [Package-Aware Testing](../design/e2e-test-runner-design.md#package-aware-testing) design for the full picture.
 
@@ -462,6 +473,13 @@ npx pathfinder-cli e2e --tier cloud --package alerting-101 \
 npx pathfinder-cli e2e --remote --tier cloud \
   --cloud-url https://learn.grafana.net/ \
   --cloud-instance-admin-token learn.grafana.net=GRAFANA_LEARN_ADMIN_TOKEN
+
+# Test unsafe cloud guides with a hot-pool speed path and cold fallback
+export GRAFANA_CLOUD_ACCESS_POLICY_TOKEN=glc_xxx
+npx pathfinder-cli e2e --remote --tier cloud \
+  --cloud-stack-access-policy-token GRAFANA_CLOUD_ACCESS_POLICY_TOKEN \
+  --cloud-stack-pool-id nightly \
+  --cloud-stack-region prod-us-east-0
 
 # Test a guide whose manifest declares instance: play.grafana.org
 export GRAFANA_PLAY_ADMIN_TOKEN=glsa_play_admin_xxx
