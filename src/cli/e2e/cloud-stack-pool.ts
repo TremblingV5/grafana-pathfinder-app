@@ -260,13 +260,6 @@ function parseTokenOutput(text: string): string {
 }
 
 function stackUrl(stack: CloudStackListItem): string | undefined {
-  if (stack.url) {
-    try {
-      return new URL('/', stack.url).toString();
-    } catch {
-      return undefined;
-    }
-  }
   if (stack.slug && CLOUD_STACK_SLUG_PATTERN.test(stack.slug)) {
     return new URL(`https://${stack.slug}.grafana.net/`).toString();
   }

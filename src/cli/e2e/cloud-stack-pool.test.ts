@@ -204,6 +204,38 @@ describe('CloudStackPool', () => {
       'output',
     ]);
   });
+  it('derives the lease target URL from the validated stack slug', async () => {
+    const runnerCalls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const fetchImpl = jest.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://grafana.com/api/instances') {
+        return jsonResponse({
+          items: [
+            {
+              slug: 'poola',
+              url: 'https://unexpected.example/',
+              labels: { 'pathfinder-e2e-pool': 'true', 'pathfinder-e2e-pool-id': 'alpha' },
+            },
+          ],
+        });
+      }
+      if (url === 'https://poola.grafana.net/api/plugins/grafana-pathfinder-app/settings') {
+        return emptyResponse();
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+    const pool = new CloudStackPool(CONFIG, false, successfulRunner(runnerCalls), fetchImpl);
+
+    const lease = await pool.lease();
+
+    await expect(lease?.provisionChain()).resolves.toEqual(
+      expect.objectContaining({ targetUrl: 'https://poola.grafana.net/' })
+    );
+    expect(fetchImpl).not.toHaveBeenCalledWith(
+      'https://unexpected.example/api/plugins/grafana-pathfinder-app/settings',
+      expect.anything()
+    );
+  });
 
   it('redacts the access policy token in Terraform lease errors', async () => {
     const runner: CommandRunner = async (_command, args) => {
