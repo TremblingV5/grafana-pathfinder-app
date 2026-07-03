@@ -33,6 +33,7 @@ import {
 import { CLOUD_STACK_FETCH_TIMEOUT_MS } from './shared-cloud-stack-environment';
 
 const CLOUD_INSTANCES_API_URL = 'https://grafana.com/api/instances';
+const TERRAFORM_DESTROY_ARGS = ['destroy', '-input=false', '-auto-approve', '-lock-timeout=60s', '-no-color'];
 
 export interface CloudStackPoolConfigInput {
   accessPolicyTokenEnvVar?: string;
@@ -258,6 +259,27 @@ function parseTokenOutput(text: string): string {
   }
   return token;
 }
+async function destroyTerraformModule(options: {
+  runner: CommandRunner;
+  moduleDir: string;
+  env: NodeJS.ProcessEnv;
+  secrets: string[];
+}): Promise<string | undefined> {
+  try {
+    const result = await options.runner('terraform', TERRAFORM_DESTROY_ARGS, {
+      cwd: options.moduleDir,
+      env: options.env,
+    });
+    assertCommandSuccess(result, 'destroy', options.secrets);
+    return undefined;
+  } catch (err) {
+    return redact(errorMessage(err), options.secrets);
+  }
+}
+
+function cleanupFailureMessage(message: string, cleanupError: string | undefined): string {
+  return cleanupError ? `${message}; cleanup failed: ${cleanupError}` : message;
+}
 
 function stackUrl(stack: CloudStackListItem): string | undefined {
   if (stack.slug && CLOUD_STACK_SLUG_PATTERN.test(stack.slug)) {
@@ -327,19 +349,23 @@ export async function createCloudStackPoolStack(options: CreateCloudStackPoolSta
   const modulePath = join(moduleDir, 'main.tf');
   const labels = replacementStackLabels(options.poolId, Math.floor(Date.now() / 1000));
   const secrets = [options.accessPolicyToken];
+  const env = terraformEnv({
+    accessPolicyToken: options.accessPolicyToken,
+    region: options.region,
+    pluginVersion: options.pluginVersion ?? 'latest',
+  });
+  let shouldDestroy = false;
 
   try {
     writeFileSync(modulePath, replacementStackModule({ slug, labels }));
-    const env = terraformEnv({
-      accessPolicyToken: options.accessPolicyToken,
-      region: options.region,
-      pluginVersion: options.pluginVersion ?? 'latest',
-    });
     const steps: Array<{ action: string; args: string[] }> = [
       { action: 'init', args: ['init', '-input=false', '-no-color'] },
       { action: 'apply', args: ['apply', '-input=false', '-auto-approve', '-no-color'] },
     ];
     for (const step of steps) {
+      if (step.action === 'apply') {
+        shouldDestroy = true;
+      }
       const result = await runner('terraform', step.args, { cwd: moduleDir, env });
       assertCommandSuccess(result, step.action, secrets);
     }
@@ -348,7 +374,9 @@ export async function createCloudStackPoolStack(options: CreateCloudStackPoolSta
     }
     return slug;
   } catch (err) {
-    throw new Error(redact(errorMessage(err), secrets));
+    const message = redact(errorMessage(err), secrets);
+    const cleanupError = shouldDestroy ? await destroyTerraformModule({ runner, moduleDir, env, secrets }) : undefined;
+    throw new Error(cleanupFailureMessage(message, cleanupError));
   } finally {
     rmSync(moduleDir, { recursive: true, force: true });
   }
@@ -408,11 +436,13 @@ export class CloudStackPool {
     chmodSync(moduleDir, 0o700);
     const modulePath = join(moduleDir, 'main.tf');
     const secrets = [this.config.accessPolicyToken];
+    const env = terraformEnv({ accessPolicyToken: this.config.accessPolicyToken });
+    let shouldDestroy = false;
 
     try {
       writeFileSync(modulePath, tokenModule(candidate.stackSlug));
-      const env = terraformEnv({ accessPolicyToken: this.config.accessPolicyToken });
       await this.runTerraform(moduleDir, ['init', '-input=false', '-no-color'], 'init', env, secrets);
+      shouldDestroy = true;
       await this.runTerraform(
         moduleDir,
         ['apply', '-input=false', '-auto-approve', '-no-color'],
@@ -432,8 +462,12 @@ export class CloudStackPool {
         this.fetchImpl
       );
     } catch (err) {
+      const message = redact(errorMessage(err), secrets);
+      const cleanupError = shouldDestroy
+        ? await destroyTerraformModule({ runner: this.runner, moduleDir, env, secrets })
+        : undefined;
       rmSync(moduleDir, { recursive: true, force: true });
-      throw new Error(redact(errorMessage(err), secrets));
+      throw new Error(cleanupFailureMessage(message, cleanupError));
     }
   }
 
@@ -588,15 +622,15 @@ export class CloudStackPoolLease implements CloudChainEnvironment {
 
     const warnings: string[] = [];
     try {
-      const result = await this.runner(
-        'terraform',
-        ['destroy', '-input=false', '-auto-approve', '-lock-timeout=60s', '-no-color'],
-        {
-          cwd: moduleDir,
-          env: terraformEnv({ accessPolicyToken: this.config.accessPolicyToken }),
-        }
-      );
-      assertCommandSuccess(result, 'destroy', this.secrets);
+      const cleanupError = await destroyTerraformModule({
+        runner: this.runner,
+        moduleDir,
+        env: terraformEnv({ accessPolicyToken: this.config.accessPolicyToken }),
+        secrets: this.secrets,
+      });
+      if (cleanupError) {
+        throw new Error(cleanupError);
+      }
     } catch (err) {
       warnings.push(
         `Failed to remove runner token for Cloud stack pool lease ${this.stack.stackSlug}: ${redact(

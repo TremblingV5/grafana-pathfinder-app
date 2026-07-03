@@ -256,6 +256,31 @@ describe('CloudStackPool', () => {
     await expect(new CloudStackPool(CONFIG, false, runner, fetchImpl).lease()).rejects.toThrow('bad [redacted]');
   });
 
+  it('destroys the runner token module when lease output fails after apply', async () => {
+    const runnerCalls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const runner: CommandRunner = async (_command, args, options) => {
+      runnerCalls.push({ args, cwd: options.cwd, env: options.env });
+      if (args[0] === 'output') {
+        return { exitCode: 1, stdout: '', stderr: 'output failed secret-token' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const fetchImpl = jest.fn(async (input: string | URL | Request) => {
+      if (String(input) === 'https://grafana.com/api/instances') {
+        return jsonResponse({
+          items: [{ slug: 'poola', labels: { 'pathfinder-e2e-pool': 'true', 'pathfinder-e2e-pool-id': 'alpha' } }],
+        });
+      }
+      throw new Error(`unexpected fetch: ${String(input)}`);
+    }) as unknown as typeof fetch;
+
+    await expect(new CloudStackPool(CONFIG, false, runner, fetchImpl).lease()).rejects.toThrow(
+      'output failed [redacted]'
+    );
+    expect(runnerCalls.map((call) => call.args[0])).toEqual(['init', 'apply', 'output', 'destroy']);
+    expect(existsSync(runnerCalls[0]!.cwd)).toBe(false);
+  });
+
   it('returns a warning when replacement creation fails after retiring a lease', async () => {
     const fetchImpl = jest.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -318,6 +343,25 @@ describe('createCloudStackPoolStack', () => {
     expect(calls.map((call) => call.args[0])).toEqual(['init', 'apply']);
     expect(calls.every((call) => call.env.TF_VAR_cloud_stack_region === 'prod-us-east-0')).toBe(true);
     expect(calls.every((call) => call.env.TF_VAR_pathfinder_plugin_version === '1.2.3')).toBe(true);
+    expect(existsSync(calls[0]!.cwd)).toBe(false);
+  });
+
+  it('destroys the replacement module when apply fails', async () => {
+    const calls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const runner: CommandRunner = async (_command, args, options) => {
+      calls.push({ args, cwd: options.cwd, env: options.env });
+      if (args[0] === 'apply') {
+        return { exitCode: 1, stdout: '', stderr: 'replacement failed secret-token' };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    await expect(
+      createCloudStackPoolStack({ ...CONFIG, region: 'prod-us-east-0', verbose: false, runner })
+    ).rejects.toThrow('replacement failed [redacted]');
+
+    expect(calls.map((call) => call.args[0])).toEqual(['init', 'apply', 'destroy']);
+    expect(calls.every((call) => call.env.TF_VAR_cloud_access_policy_token === 'secret-token')).toBe(true);
     expect(existsSync(calls[0]!.cwd)).toBe(false);
   });
 });
