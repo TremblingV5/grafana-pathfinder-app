@@ -64,7 +64,7 @@ import {
   createCloudStackPoolConfig,
   type CloudStackPoolConfig,
 } from '../e2e/cloud-stack-pool';
-import { preflightTargetUrlsForPlan } from '../e2e/preflight-targets';
+import { assertTierHomogeneousChains, preflightTargetUrlsForPlan } from '../e2e/preflight-targets';
 
 /**
  * CLI options for the e2e command
@@ -918,6 +918,7 @@ export const e2eCommand = new Command('e2e')
       printRunConfiguration(inputs.guides, options, inputs.mode);
 
       const plan = buildExecutionPlan(inputs.guides, options, inputs.repoSource);
+      assertTierHomogeneousChains(plan, inputs.packageMetaById);
 
       await maybeCleanStart(cleanEnv, options);
 

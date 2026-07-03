@@ -3,7 +3,7 @@ import type { CloudStackPoolConfig } from './cloud-stack-pool';
 import type { ColdCloudStackProvisioningConfig } from './cold-cloud-stack-environment';
 import type { PackageMeta } from './e2e-results';
 import type { ExecutionPlan, PlannedGuide } from './guide-chains';
-import { preflightTargetUrlsForPlan } from './preflight-targets';
+import { assertTierHomogeneousChains, preflightTargetUrlsForPlan } from './preflight-targets';
 
 const GLOBAL_URL = 'http://localhost:3000';
 const READONLY_SHARED_URL = 'https://learn.grafana.net/';
@@ -95,6 +95,35 @@ function packageMetaWithMutatingCloudChain(): Map<string, PackageMeta> {
 }
 
 describe('e2e preflight targets', () => {
+  it('rejects mixed-tier dependency chains before target selection', () => {
+    const plan: ExecutionPlan = {
+      chains: [[plannedGuide('local'), plannedGuide('mutating-cloud', ['local'])]],
+      autoIncludedIds: [],
+      errors: [],
+    };
+    const packageMetaById = new Map<string, PackageMeta>([
+      ['local', { packageId: 'local', tier: 'local' }],
+      ['mutating-cloud', { packageId: 'mutating-cloud', tier: 'cloud' }],
+    ]);
+
+    expect(() => assertTierHomogeneousChains(plan, packageMetaById)).toThrow(
+      'Invalid E2E execution plan: dependency chain mixes test environment tiers (local:local → mutating-cloud:cloud).'
+    );
+  });
+
+  it('allows homogeneous chains and defaults unmanaged guides to local tier', () => {
+    const plan: ExecutionPlan = {
+      chains: [[plannedGuide('local'), plannedGuide('unmanaged', ['local'])], [plannedGuide('mutating-cloud')]],
+      autoIncludedIds: [],
+      errors: [],
+    };
+    const packageMetaById = new Map<string, PackageMeta>([
+      ['local', { packageId: 'local', tier: 'local' }],
+      ['mutating-cloud', { packageId: 'mutating-cloud', tier: 'cloud' }],
+    ]);
+
+    expect(() => assertTierHomogeneousChains(plan, packageMetaById)).not.toThrow();
+  });
   it('excludes guides routed through cold cloud stacks from original target preflight checks', () => {
     const targets = preflightTargetUrlsForPlan({
       plan: planWithMutatingCloudChain(),

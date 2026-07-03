@@ -14,6 +14,22 @@ interface PreflightTargetUrlsForPlanOptions {
   globalUrl: string;
 }
 
+function tierForGuide(id: string, packageMetaById: Map<string, PackageMeta>): string {
+  return packageMetaById.get(id)?.tier ?? 'local';
+}
+
+export function assertTierHomogeneousChains(plan: ExecutionPlan, packageMetaById: Map<string, PackageMeta>): void {
+  for (const chain of plan.chains) {
+    const tiers = new Set(chain.map((planned) => tierForGuide(planned.id, packageMetaById)));
+    if (tiers.size > 1) {
+      const chainSummary = chain
+        .map((planned) => `${planned.id}:${tierForGuide(planned.id, packageMetaById)}`)
+        .join(' → ');
+      throw new Error(`Invalid E2E execution plan: dependency chain mixes test environment tiers (${chainSummary}).`);
+    }
+  }
+}
+
 /** Preflight runs before cold-stack provisioning, so exclude guides that will run
  * against isolated stacks or be skipped for unsafe shared-stack access
  */
