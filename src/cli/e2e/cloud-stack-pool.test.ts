@@ -316,6 +316,32 @@ describe('CloudStackPool', () => {
       'Failed to replace retired Cloud stack pool lease poola: terraform apply failed: replacement failed [redacted]',
     ]);
   });
+
+  it('returns a warning and does not replace the stack when retiring a lease fails', async () => {
+    const runnerCalls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const fetchImpl = jest.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === 'https://grafana.com/api/instances') {
+        return jsonResponse({
+          items: [{ slug: 'poola', labels: { 'pathfinder-e2e-pool': 'true', 'pathfinder-e2e-pool-id': 'alpha' } }],
+        });
+      }
+      if (url === 'https://poola.grafana.net/api/plugins/grafana-pathfinder-app/settings') {
+        return emptyResponse();
+      }
+      if (url === 'https://grafana.com/api/instances/poola') {
+        return emptyResponse(500, 'Internal Server Error');
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as unknown as typeof fetch;
+    const lease = await new CloudStackPool(CONFIG, false, successfulRunner(runnerCalls), fetchImpl).lease();
+
+    await expect(lease!.teardownChain()).resolves.toEqual([
+      'Failed to retire Cloud stack pool lease poola: HTTP 500 Internal Server Error',
+    ]);
+
+    expect(runnerCalls.map((call) => call.args[0])).toEqual(['init', 'apply', 'output', 'destroy']);
+  });
 });
 
 describe('createCloudStackPoolStack', () => {

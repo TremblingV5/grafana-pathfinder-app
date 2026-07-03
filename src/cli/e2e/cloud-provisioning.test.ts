@@ -30,6 +30,7 @@ import {
   sweepCloudTargets,
 } from './cloud-provisioning';
 import type { CloudAuthPolicy } from './cloud-auth';
+import type { CloudChainCleanupRegistry } from './cloud-chain-cleanup-registry';
 import type { PackageMeta } from './e2e-results';
 
 const cloudAuth: CloudAuthPolicy = {
@@ -60,6 +61,14 @@ function poolWithLease(lease: unknown, diagnostics = 'pool exhausted'): CloudSta
     lease: jest.fn(async () => lease),
     diagnostics: jest.fn(() => diagnostics),
   } as unknown as CloudStackPool;
+}
+
+function cleanupRegistry(): CloudChainCleanupRegistry {
+  return {
+    track: jest.fn(),
+    untrack: jest.fn(),
+    teardownAll: jest.fn(),
+  } as unknown as CloudChainCleanupRegistry;
 }
 
 describe('cloudTargetsInChain', () => {
@@ -358,6 +367,112 @@ describe('provisionCloudTargetsForChain', () => {
     expect(provisioned.targetUrlForGuide('mutating', 'https://learn.grafana.net/')).toBe('https://pool.grafana.net/');
     expect(provisioned.tokenForGuide('mutating', 'https://learn.grafana.net/')).toBe('pool-token');
     await expect(provisioned.teardownAll()).resolves.toEqual(['pool cleanup warning']);
+  });
+
+  it('tracks and untracks pool leases through the cleanup registry', async () => {
+    const poolLease = {
+      provisionChain: jest.fn(() => ({
+        kind: 'pool',
+        targetUrl: 'https://pool.grafana.net/',
+        token: 'pool-token',
+        stackSlug: 'pool',
+      })),
+      teardownChain: jest.fn(async () => []),
+    };
+    const cloudStackPool = poolWithLease(poolLease);
+    const registry = cleanupRegistry();
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    const provisioned = await provisionCloudTargetsForChain({
+      targetUrls: ['https://learn.grafana.net/'],
+      cloudAuth,
+      chain: [{ id: 'mutating' }],
+      packageMetaById,
+      cloudStackPool,
+      cloudChainCleanup: registry,
+      verbose: false,
+    });
+
+    expect(registry.track).toHaveBeenCalledWith(poolLease);
+    await expect(provisioned.teardownAll()).resolves.toEqual([]);
+    expect(registry.untrack).toHaveBeenCalledWith(poolLease);
+  });
+
+  it('tracks and untracks cold stacks through the cleanup registry', async () => {
+    const registry = cleanupRegistry();
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    const provisioned = await provisionCloudTargetsForChain({
+      targetUrls: ['https://learn.grafana.net/'],
+      cloudAuth,
+      chain: [{ id: 'mutating' }],
+      packageMetaById,
+      cloudStack,
+      cloudChainCleanup: registry,
+      verbose: false,
+    });
+    const env = (ColdCloudStackEnvironment as unknown as jest.Mock).mock.results[0]?.value;
+
+    expect(registry.track).toHaveBeenCalledWith(env);
+    await expect(provisioned.teardownAll()).resolves.toEqual(['cleanup warning']);
+    expect(registry.untrack).toHaveBeenCalledWith(env);
+  });
+
+  it('untracks cold stacks when provisioning fails', async () => {
+    const failedEnv = {
+      provisionChain: jest.fn(async () => {
+        throw new Error('cold boom');
+      }),
+      teardownChain: jest.fn(async () => []),
+    };
+    (ColdCloudStackEnvironment as unknown as jest.Mock).mockImplementationOnce(() => failedEnv);
+    const registry = cleanupRegistry();
+    const packageMetaById = new Map<string, PackageMeta>([
+      [
+        'mutating',
+        {
+          packageId: 'mutating',
+          tier: 'cloud',
+          targetUrl: 'https://learn.grafana.net/',
+          sideEffects: { level: 'mutating', reasons: [] },
+        },
+      ],
+    ]);
+
+    await expect(
+      provisionCloudTargetsForChain({
+        targetUrls: ['https://learn.grafana.net/'],
+        cloudAuth,
+        chain: [{ id: 'mutating' }],
+        packageMetaById,
+        cloudStack,
+        cloudChainCleanup: registry,
+        verbose: false,
+      })
+    ).rejects.toThrow('cold boom');
+
+    expect(registry.track).toHaveBeenCalledWith(failedEnv);
+    expect(registry.untrack).toHaveBeenCalledWith(failedEnv);
   });
 
   it('falls back to cold provisioning when the pool is exhausted and region config exists', async () => {
