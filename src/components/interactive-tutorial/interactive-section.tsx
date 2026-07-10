@@ -1438,7 +1438,7 @@ export function InteractiveSection({
                 return 'Reset section and clear all step completion to allow manual re-interaction';
               }
               if (resumeInfo.isResume) {
-                return `Resume from step ${resumeInfo.nextStepIndex + 1}, ${resumeInfo.remainingSteps} steps remaining`;
+                return `Resume from step ${resumeInfo.nextStepIndex + 1}, ${resumeInfo.remainingSteps} ${resumeInfo.remainingSteps === 1 ? 'step' : 'steps'} remaining`;
               }
               return hints || `Run through all ${nonNoopSteps.length} steps in sequence`;
             })()}
@@ -1451,7 +1451,7 @@ export function InteractiveSection({
                 return 'Reset section';
               }
               if (resumeInfo.isResume) {
-                return `▶ Resume (${resumeInfo.remainingSteps} steps)`;
+                return `▶ Resume (${resumeInfo.remainingSteps} ${resumeInfo.remainingSteps === 1 ? 'step' : 'steps'})`;
               }
               return `▶ Do Section (${nonNoopSteps.length} steps)`;
             })()}
