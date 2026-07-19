@@ -370,6 +370,13 @@ export const getSummaryStyles = (theme: GrafanaTheme2) => ({
     lineHeight: 1.4,
     margin: 0,
   }),
+  summaryInline: css({
+    marginTop: theme.spacing(1.5),
+    padding: theme.spacing(1.5),
+    backgroundColor: theme.colors.background.secondary,
+    borderRadius: theme.shape.radius.default,
+    border: `1px solid ${theme.colors.border.weak}`,
+  }),
   summaryCta: css({
     position: 'sticky',
     bottom: 0,
