@@ -111,6 +111,15 @@ const getCategoryTagStyle = (styles: ReturnType<typeof getStyles>, type?: string
 /** Check if recommendation type is docs-only (static documentation, not action-oriented) */
 const isDocsOnlyRecommendation = (type?: string): boolean => type === 'docs-page';
 
+/** Word-count threshold below which summaries are shown inline without collapse UI. */
+const SUMMARY_WORD_THRESHOLD = 25;
+
+/** Returns true when a summary is short enough to display inline (no collapse needed). */
+const isSummaryShort = (summary?: string): boolean => {
+  if (!summary) return true;
+  return summary.split(/\s+/).filter(Boolean).length <= SUMMARY_WORD_THRESHOLD;
+};
+
 /**
  * Check if recommendation should use openDocsPage.
  * All packages route through openDocsPage because it handles packageInfo;
@@ -456,55 +465,65 @@ export const RecommendationsSection = memo(function RecommendationsSection({
 
                       {(!isDocsOnlyRecommendation(displayType) || recommendation.summary) && (
                         <>
-                          <div className={styles.cardMetadata}>
-                            <div className={styles.summaryInfo}>
-                              <button
-                                onClick={() => {
-                                  reportAppInteraction(UserInteraction.SummaryClick, {
-                                    content_title: recommendation.title,
-                                    content_url: contentUrl,
-                                    content_type: getContentTypeForAnalytics(
-                                      contentUrl,
-                                      getContentTypeForDisplayType(displayType)
-                                    ),
-                                    action: recommendation.summaryExpanded ? 'collapse' : 'expand',
-                                    match_accuracy: recommendation.matchAccuracy || 0,
-                                    ...(displayType !== 'docs-page' && {
-                                      total_milestones: recommendation.totalSteps || 0,
-                                    }),
-                                  });
-
-                                  toggleSummaryExpansion(contentUrl);
-                                }}
-                                className={styles.summaryButton}
-                              >
-                                <Icon name="info-circle" size="sm" />
-                                <span>{t('contextPanel.summary', 'Summary')}</span>
-                                <Icon name={recommendation.summaryExpanded ? 'angle-up' : 'angle-down'} size="sm" />
-                              </button>
-                              {!isDocsOnlyRecommendation(displayType) &&
-                                typeof recommendation.completionPercentage === 'number' && (
-                                  <div className={styles.completionInfo}>
-                                    <div
-                                      className={styles.completionPercentage}
-                                      data-completion={recommendation.completionPercentage}
-                                    >
-                                      {t('contextPanel.percentComplete', '{{percent}}% complete', {
-                                        percent: recommendation.completionPercentage,
-                                      })}
-                                    </div>
-                                  </div>
-                                )}
-                            </div>
-                          </div>
-
-                          {recommendation.summaryExpanded && (
-                            <div className={styles.summaryExpansion}>
+                          {isSummaryShort(recommendation.summary) ? (
+                            <>
                               {recommendation.summary && (
-                                <div className={styles.summaryContent}>
+                                <div className={styles.summaryInline}>
                                   <p className={styles.summaryText}>{recommendation.summary}</p>
                                 </div>
                               )}
+                            </>
+                          ) : (
+                            <>
+                              <div className={styles.cardMetadata}>
+                                <div className={styles.summaryInfo}>
+                                  <button
+                                    onClick={() => {
+                                      reportAppInteraction(UserInteraction.SummaryClick, {
+                                        content_title: recommendation.title,
+                                        content_url: contentUrl,
+                                        content_type: getContentTypeForAnalytics(
+                                          contentUrl,
+                                          getContentTypeForDisplayType(displayType)
+                                        ),
+                                        action: recommendation.summaryExpanded ? 'collapse' : 'expand',
+                                        match_accuracy: recommendation.matchAccuracy || 0,
+                                        ...(displayType !== 'docs-page' && {
+                                          total_milestones: recommendation.totalSteps || 0,
+                                        }),
+                                      });
+
+                                      toggleSummaryExpansion(contentUrl);
+                                    }}
+                                    className={styles.summaryButton}
+                                  >
+                                    <Icon name="info-circle" size="sm" />
+                                    <span>{t('contextPanel.summary', 'Summary')}</span>
+                                    <Icon name={recommendation.summaryExpanded ? 'angle-up' : 'angle-down'} size="sm" />
+                                  </button>
+                                  {!isDocsOnlyRecommendation(displayType) &&
+                                    typeof recommendation.completionPercentage === 'number' && (
+                                      <div className={styles.completionInfo}>
+                                        <div
+                                          className={styles.completionPercentage}
+                                          data-completion={recommendation.completionPercentage}
+                                        >
+                                          {t('contextPanel.percentComplete', '{{percent}}% complete', {
+                                            percent: recommendation.completionPercentage,
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
+                                </div>
+                              </div>
+
+                              {recommendation.summaryExpanded && (
+                                <div className={styles.summaryExpansion}>
+                                  {recommendation.summary && (
+                                    <div className={styles.summaryContent}>
+                                      <p className={styles.summaryText}>{recommendation.summary}</p>
+                                    </div>
+                                  )}
 
                               {recommendation.isResolvingDeferred && !recommendation.milestones && (
                                 <div className={cx(skeletonStyles.skeleton, styles.deferredSkeleton)}>
@@ -758,59 +777,69 @@ export const RecommendationsSection = memo(function RecommendationsSection({
 
                     {(!isDocsOnlyRecommendation(displayType) || recommendation.summary) && (
                       <>
-                        <div className={styles.cardMetadata}>
-                          <div className={styles.summaryInfo}>
-                            <button
-                              onClick={() => {
-                                reportAppInteraction(UserInteraction.SummaryClick, {
-                                  content_title: recommendation.title,
-                                  content_url: contentUrl,
-                                  content_type: getContentTypeForAnalytics(
-                                    contentUrl,
-                                    getContentTypeForDisplayType(displayType)
-                                  ),
-                                  action: recommendation.summaryExpanded ? 'collapse' : 'expand',
-                                  match_accuracy: recommendation.matchAccuracy || 0,
-                                  ...(displayType !== 'docs-page' && {
-                                    total_milestones: recommendation.totalSteps || 0,
-                                  }),
-                                });
-
-                                toggleSummaryExpansion(contentUrl);
-                              }}
-                              className={styles.summaryButton}
-                              data-testid={testIds.contextPanel.recommendationSummaryButton(index)}
-                            >
-                              <Icon name="info-circle" size="sm" />
-                              <span>{t('contextPanel.summary', 'Summary')}</span>
-                              <Icon name={recommendation.summaryExpanded ? 'angle-up' : 'angle-down'} size="sm" />
-                            </button>
-                            {!isDocsOnlyRecommendation(displayType) &&
-                              typeof recommendation.completionPercentage === 'number' && (
-                                <div className={styles.completionInfo}>
-                                  <div
-                                    className={styles.completionPercentage}
-                                    data-completion={recommendation.completionPercentage}
-                                  >
-                                    {t('contextPanel.percentComplete', '{{percent}}% complete', {
-                                      percent: recommendation.completionPercentage,
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-                          </div>
-                        </div>
-
-                        {recommendation.summaryExpanded && (
-                          <div
-                            className={styles.summaryExpansion}
-                            data-testid={testIds.contextPanel.recommendationSummaryContent(index)}
-                          >
+                        {isSummaryShort(recommendation.summary) ? (
+                          <>
                             {recommendation.summary && (
-                              <div className={styles.summaryContent}>
+                              <div className={styles.summaryInline}>
                                 <p className={styles.summaryText}>{recommendation.summary}</p>
                               </div>
                             )}
+                          </>
+                        ) : (
+                          <>
+                            <div className={styles.cardMetadata}>
+                              <div className={styles.summaryInfo}>
+                                <button
+                                  onClick={() => {
+                                    reportAppInteraction(UserInteraction.SummaryClick, {
+                                      content_title: recommendation.title,
+                                      content_url: contentUrl,
+                                      content_type: getContentTypeForAnalytics(
+                                        contentUrl,
+                                        getContentTypeForDisplayType(displayType)
+                                      ),
+                                      action: recommendation.summaryExpanded ? 'collapse' : 'expand',
+                                      match_accuracy: recommendation.matchAccuracy || 0,
+                                      ...(displayType !== 'docs-page' && {
+                                        total_milestones: recommendation.totalSteps || 0,
+                                      }),
+                                    });
+
+                                    toggleSummaryExpansion(contentUrl);
+                                  }}
+                                  className={styles.summaryButton}
+                                  data-testid={testIds.contextPanel.recommendationSummaryButton(index)}
+                                >
+                                  <Icon name="info-circle" size="sm" />
+                                  <span>{t('contextPanel.summary', 'Summary')}</span>
+                                  <Icon name={recommendation.summaryExpanded ? 'angle-up' : 'angle-down'} size="sm" />
+                                </button>
+                                {!isDocsOnlyRecommendation(displayType) &&
+                                  typeof recommendation.completionPercentage === 'number' && (
+                                    <div className={styles.completionInfo}>
+                                      <div
+                                        className={styles.completionPercentage}
+                                        data-completion={recommendation.completionPercentage}
+                                      >
+                                        {t('contextPanel.percentComplete', '{{percent}}% complete', {
+                                          percent: recommendation.completionPercentage,
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                              </div>
+                            </div>
+
+                            {recommendation.summaryExpanded && (
+                              <div
+                                className={styles.summaryExpansion}
+                                data-testid={testIds.contextPanel.recommendationSummaryContent(index)}
+                              >
+                                {recommendation.summary && (
+                                  <div className={styles.summaryContent}>
+                                    <p className={styles.summaryText}>{recommendation.summary}</p>
+                                  </div>
+                                )}
 
                             {recommendation.isResolvingDeferred && !recommendation.milestones && (
                               <div className={cx(skeletonStyles.skeleton, styles.deferredSkeleton)}>
